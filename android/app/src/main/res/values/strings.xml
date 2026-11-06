@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">광쌤캠</string>
+    <string name="status_idle">PC와 연결되지 않았어요. [QR 연결]을 눌러 PC 화면의 QR코드를 찍어 주세요.</string>
+    <string name="status_connecting">PC에 연결하는 중…</string>
+    <string name="status_connected">PC와 연결됨 · %1$d fps</string>
+    <string name="status_failed">연결하지 못했어요. PC와 폰이 같은 와이파이인지 확인해 주세요.</string>
+    <string name="status_lost">연결이 끊겼어요. 다시 연결하는 중…</string>
+    <string name="btn_qr">QR 연결</string>
+    <string name="btn_manual">주소 입력</string>
+    <string name="btn_disconnect">연결 끊기</string>
+    <string name="btn_switch">카메라 전환</string>
+    <string name="btn_torch">손전등</string>
+    <string name="btn_quality">화질: %1$s</string>
+    <string name="btn_dim">화면 어둡게</string>
+    <string name="dim_hint">화면을 두 번 누르면 다시 밝아져요</string>
+    <string name="manual_title">PC 주소 입력</string>
+    <string name="manual_hint">예: 192.168.0.10:51234</string>
+    <string name="ok">연결</string>
+    <string name="cancel">취소</string>
+    <string name="qr_prompt">PC 프로그램 화면의 QR코드를 비춰 주세요</string>
+    <string name="qr_invalid">광쌤캠 QR코드가 아니에요</string>
+    <string name="need_camera">카메라 권한이 있어야 쓸 수 있어요</string>
+</resources>

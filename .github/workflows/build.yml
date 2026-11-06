@@ -1,0 +1,183 @@
+name: 빌드
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SOFTCAM_COMMIT: 6f5d8f9b5f7dc37a86a119b881bc75e1860fb3ec
+  VERSION: 0.1.${{ github.run_number }}
+
+jobs:
+  android:
+    name: 안드로이드 앱 (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: 서명 키 준비 (저장소 Secrets에 있으면)
+        env:
+          KS: ${{ secrets.KWANGCAM_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KWANGCAM_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::서명 키가 없어 임시 키로 서명합니다. 업데이트할 때마다 폰에서 앱을 지웠다 다시 깔아야 해요."
+          fi
+
+      - name: APK 빌드
+        working-directory: android
+        env:
+          KWANGCAM_VERSION_CODE: ${{ github.run_number }}
+          KWANGCAM_VERSION_NAME: ${{ env.VERSION }}
+          KWANGCAM_KEYSTORE_PASSWORD: ${{ secrets.KWANGCAM_KEYSTORE_PASSWORD }}
+          KWANGCAM_KEY_PASSWORD: ${{ secrets.KWANGCAM_KEYSTORE_PASSWORD }}
+          KWANGCAM_KEY_ALIAS: kwangcam
+        run: gradle --no-daemon assembleRelease
+
+      - name: 파일 이름 정리
+        run: cp android/app/build/outputs/apk/release/app-release.apk KwangCam.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KwangCam-android
+          path: KwangCam.apk
+
+  windows:
+    name: Windows 프로그램 (설치 파일)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: softcam(가상 카메라 라이브러리) 받기
+        shell: pwsh
+        run: |
+          git init softcam
+          cd softcam
+          git remote add origin https://github.com/tshino/softcam
+          git fetch --depth 1 origin $env:SOFTCAM_COMMIT
+          git checkout FETCH_HEAD
+
+      - name: softcam 이름·ID를 광쌤캠용으로 바꾸기
+        shell: pwsh
+        run: |
+          function Patch($file, $from, $to) {
+            $text = Get-Content $file -Raw
+            if (-not $text.Contains($from)) { throw "패치 실패: $file 에서 '$from' 를 찾지 못함" }
+            Set-Content $file $text.Replace($from, $to) -NoNewline
+          }
+          # 카메라 고유 ID (다른 softcam 기반 프로그램과 겹치지 않도록)
+          Patch softcam/src/softcam/softcam.cpp '0xaef3b972, 0x5fa5, 0x4647, 0x95, 0x71, 0x35, 0x8e, 0xb4, 0x72, 0xbc, 0x9e' '0xe7354a14, 0x5092, 0x44d3, 0xb0, 0xdb, 0x81, 0xc7, 0x14, 0x87, 0x5e, 0x8b'
+          # Zoom 카메라 목록에 보이는 이름: "광쌤캠 (KwangCam)"
+          Patch softcam/src/softcam/softcam.cpp 'L"DirectShow Softcam"' 'L"광쌩캠 (KwangCam)"'
+          # 내부 공유 메모리 이름
+          Patch softcam/src/softcamcore/FrameBuffer.cpp '"DirectShow Softcam/' '"KwangCam/'
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: softcam.dll 빌드 (64비트, 32비트)
+        shell: pwsh
+        run: |
+          msbuild softcam/softcam.sln /t:softcam /p:Configuration=Release /p:Platform=x64 /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          msbuild softcam/softcam.sln /t:softcam /p:Configuration=Release /p:Platform=Win32 /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem softcam -Recurse -Filter softcam.dll | ForEach-Object { $_.FullName }
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: PC 프로그램 빌드
+        shell: pwsh
+        run: |
+          dotnet publish windows/KwangCam/KwangCam.csproj -c Release -o dist -p:Version=$env:VERSION
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 파일 모으기
+        shell: pwsh
+        run: |
+          $x64 = "softcam/dist/bin/x64/softcam.dll"
+          $x86 = "softcam/dist/bin/Win32/softcam.dll"
+          if (-not (Test-Path $x64)) { $x64 = (Get-ChildItem softcam -Recurse -Filter softcam.dll | Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1).FullName }
+          if (-not (Test-Path $x86)) { $x86 = (Get-ChildItem softcam -Recurse -Filter softcam.dll | Where-Object { $_.FullName -match '\\Win32\\' } | Select-Object -First 1).FullName }
+          if (-not $x64 -or -not $x86) { throw "softcam.dll을 찾지 못함" }
+          Copy-Item $x64 dist/softcam.dll
+          New-Item -ItemType Directory -Force dist/x86 | Out-Null
+          Copy-Item $x86 dist/x86/softcam.dll
+          Get-ChildItem dist -Recurse | ForEach-Object { "{0,12}  {1}" -f $_.Length, $_.FullName }
+
+      - name: 설치 파일 만들기 (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          # 한국어 설치 화면 (없으면 영어로)
+          $defs = @("/DAppVersion=$env:VERSION", "/DSourceDir=..\dist")
+          $ko = "${env:ProgramFiles(x86)}\Inno Setup 6\Languages\Korean.isl"
+          if (Test-Path $ko) { Copy-Item $ko installer/Korean.isl }
+          else {
+            try { Invoke-WebRequest "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/Korean.isl" -OutFile installer/Korean.isl } catch { }
+          }
+          if (Test-Path installer/Korean.isl) { $defs += "/DKOREAN" }
+          & $iscc @defs installer/KwangCam.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KwangCam-windows
+          path: out/KwangCam-Setup.exe
+
+  release:
+    name: 다운로드 페이지 올리기
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+
+      - name: latest 태그를 이번 버전으로 옮기기
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 광쌤캠 최신 버전 (${{ env.VERSION }})
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          body: |
+            ## 설치 방법
+            1. **PC (Windows 10/11)**: `KwangCam-Setup.exe`를 받아 실행하세요.
+               "Windows의 PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누르면 돼요.
+            2. **핸드폰 (안드로이드 8.0 이상)**: 폰에서 이 페이지를 열고 `KwangCam.apk`를 받아 설치하세요.
+               "출처를 알 수 없는 앱" 경고가 나오면 설치를 허용해 주세요.
+            3. PC에서 광쌤캠을 켜고, 폰 앱의 **[QR 연결]**로 PC 화면의 QR코드를 찍으세요.
+            4. Zoom → 설정 → 비디오 → 카메라에서 **광쌤캠 (KwangCam)**을 고르세요.
+
+            PC와 폰은 **같은 와이파이**에 연결되어 있어야 해요.
+          files: |
+            files/KwangCam.apk
+            files/KwangCam-Setup.exe
